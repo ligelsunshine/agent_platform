@@ -1,0 +1,141 @@
+[project]
+name = "agent-platform"
+version = "0.1.0"
+description = "Agent 研发平台：沉淀 Agent 公共框架与基础设施，承载问题定位等多个具体 Agent。"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "pydantic>=2.10,<3",
+    "pydantic-settings>=2.7,<3",
+]
+
+[dependency-groups]
+dev = [
+    "import-linter>=2.1",
+    "mypy>=1.14",
+    "pre-commit>=4.0",
+    "pytest>=8.3",
+    "pytest-asyncio>=0.25",
+    "pytest-cov>=6.0",
+    "ruff>=0.9",
+]
+
+[build-system]
+requires = ["uv_build>=0.13.1,<0.14.0"]
+build-backend = "uv_build"
+
+# ---------- ruff：格式化 + lint ----------
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src", "tests", "scripts"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W", "F",        # pycodestyle / pyflakes 基础错误
+    "I",                  # import 排序
+    "N",                  # 命名规范
+    "D",                  # docstring
+    "UP",                 # 使用新语法
+    "B",                  # 常见缺陷
+    "A",                  # 禁止遮蔽内置名
+    "C4",                 # 推导式
+    "DTZ",                # 禁止无时区 datetime
+    "T20",                # 禁止 print
+    "SIM", "RET", "PIE",  # 简化写法
+    "PTH",                # 使用 pathlib
+    "PT",                 # pytest 风格
+    "S",                  # 安全（bandit）
+    "BLE",                # 禁止宽泛 except
+    "TRY",                # 异常写法
+    "LOG", "G",           # 日志写法
+    "ASYNC",              # 异步中的阻塞调用
+    "TID",                # 导入限制
+    "TC",                 # 仅类型导入
+    "ERA",                # 被注释掉的代码
+    "PL",                 # pylint 规则
+    "C90",                # 圈复杂度
+    "ANN",                # 类型标注
+    "RUF",                # ruff 自有规则
+]
+ignore = [
+    "D107",                         # 构造参数写在类 docstring 的 Args 中
+    "D415",                         # 中文摘要不要求英文句末标点
+    "RUF001", "RUF002", "RUF003",   # 允许中文全角标点
+    "TRY003",                       # 允许异常携带上下文消息
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"pickle".msg = "禁止反序列化不可信数据，使用 JSON + Pydantic。"
+"os.system".msg = "禁止执行 Shell 命令；确需子进程时使用参数列表并经过白名单校验。"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["D", "S101", "ANN", "PLR2004", "SLF001"]
+"scripts/**/*.py" = ["T20"]
+# Spike 脚本需要以参数列表调用固定的 qodercli 可执行文件。
+"scripts/qoder_spike.py" = ["T20", "S603"]
+
+[tool.ruff.format]
+docstring-code-format = true
+
+# ---------- mypy：严格类型检查 ----------
+[tool.mypy]
+python_version = "3.12"
+strict = true
+mypy_path = "src"
+files = ["src", "scripts", "tests"]
+pretty = true
+warn_unreachable = true
+enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool", "possibly-undefined"]
+plugins = ["pydantic.mypy"]
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+warn_required_dynamic_aliases = true
+
+# ---------- pytest + 覆盖率 ----------
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = ["-ra", "--strict-markers", "--strict-config", "--import-mode=importlib"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+xfail_strict = true
+filterwarnings = ["error"]
+markers = [
+    "integration: 需要本地外部依赖的集成测试",
+    "eval_live: 需要调用真实 Qoder 的评测测试",
+]
+
+[tool.coverage.run]
+branch = true
+source_pkgs = ["agent_platform"]
+
+[tool.coverage.report]
+fail_under = 85
+show_missing = true
+skip_covered = true
+exclude_also = ["if TYPE_CHECKING:", "raise NotImplementedError", "@overload"]
+
+# ---------- import-linter：分层依赖 ----------
+[tool.importlinter]
+root_packages = ["agent_platform"]
+
+[[tool.importlinter.contracts]]
+name = "分层依赖：app -> agents | evaluation | infra -> common"
+type = "layers"
+layers = [
+    "agent_platform.app",
+    "agent_platform.agents | agent_platform.evaluation | agent_platform.infra",
+    "agent_platform.common",
+]
