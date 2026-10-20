@@ -12,8 +12,8 @@
 
 - `common`：Agent 公共框架，包括 Agent Loop、LLM 端口、工具契约、证据、Trace、配置、日志和错误码。
 - `infra`：通用基础设施适配器，包括 Qoder CLI、MCP 客户端、SQLite、Redis、代码读取等，实现 `common` 中定义的端口。
-- `evaluation`：通用评测框架，包括评测执行器、通用指标和报告。
-- `agents/<name>`：具体 Agent，每个子包包含该 Agent 的编排策略、提示词、Profile、专属工具定义和评测数据集。
+- `evaluation`：通用评测框架，包括评测执行器、通用指标和报告；不导入具体 Agent，被测对象通过 `EvalSubject` 协议由 `app` 注入。
+- `agents/<name>`：具体 Agent，每个子包包含该 Agent 的编排策略、提示词、Profile、专属工具定义、评测用例和领域指标。
 - `app`：FastAPI 接口、Agent 注册和 `bootstrap.py` 对象组装。
 
 依赖方向由 import-linter 强制检查（`make lint`）：
@@ -118,7 +118,8 @@ app  →  agents | evaluation | infra  →  common
 
 ### 测试
 
-- 测试目录与 `src` 结构对应：`tests/unit/<层>/test_<模块>.py`；需要外部依赖的测试放 `tests/integration` 并打 marker。
+- 测试目录镜像 `src` 结构并按层/Agent 分目录：`tests/unit/common|infra|evaluation|agents/<name>/test_<模块>.py`；需要外部依赖的测试放 `tests/integration` 并打 marker；真实模型评测放 `tests/eval` 并打 `eval_live`。
+- 公共 Fake（FakeLLM、FakeTool 等）收敛在 `tests/unit/conftest.py`，不得在各 Agent 测试中重复实现；单测 fixture 放 `tests/fixtures/<agent>/`，评测数据集放 `evaluation/fixtures/`，两者不混用。
 - 单元测试禁止访问网络、调用真实 Qoder 或其他外部进程。
 - 新增公开行为必须有单元测试；修复缺陷先补回归测试；覆盖率门槛 85%，只升不降。
 - Agent 效果单独通过评测数据集衡量。

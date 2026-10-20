@@ -2,7 +2,7 @@
 
 | 项目 | 内容 |
 | --- | --- |
-| 文档版本 | v0.3 |
+| 文档版本 | v0.4 |
 | 状态 | 架构基线，Phase 0 已完成 |
 | 更新时间 | 2026-10-19 |
 | 项目路径 | `/Users/ethan/Ai_Learn/agent-platform` |
@@ -57,6 +57,8 @@
 | ADR-010 | 使用单一根包 `agent_platform`（src layout） | 避免 `common`、`app` 等通用顶层包与 PyPI 包冲突；导入路径唯一、打包配置简单；分层由 import-linter 强制 | 已确定 |
 | ADR-011 | 具体 Agent 统一放在 `agent_platform/agents/` 容器包下 | 公共能力与具体 Agent 边界清晰；新增 Agent 只需新增子包；Agent 之间互不依赖 | 已确定 |
 | ADR-012 | 仓库目录由 `incident-agent` 更名为 `agent-platform` | 仓库定位是多 Agent 研发平台，问题定位只是第一个 Agent | 已确定 |
+| ADR-013 | `evaluation` 保持独立模块，不并入具体 Agent | 指标与执行框架需要跨 Agent、跨版本复用与对比；评测只依赖公共契约和 Trace，保证评判独立 | 已确定 |
+| ADR-014 | 测试镜像 `src` 结构并按模块/Agent 分目录 | 与 requests/flask 等主流项目一致；公共 Fake 收敛在根 conftest，避免各 Agent 重复造轮子 | 已确定 |
 
 ## 4. 基础概念
 
@@ -108,7 +110,7 @@ flowchart TB
 | 具体 Agent 层 | `agents/<agent_name>` | 定义具体 Agent 的提示词、Profile、工具集合、策略和终止规则 | 通过 common 运行时执行，不复制工具执行逻辑；Agent 之间互不依赖 |
 | 公共运行时 | `common` | Agent Loop、契约、LLM 端口、工具注册与执行、证据、预算、Trace、配置、错误 | 不依赖具体 Agent 和具体基础设施 |
 | 端口与适配器 | `common` 定义端口、`infra` 实现 | 隔离 Qoder、MCP、SQLite、Redis、代码仓库等外部系统 | 外部系统变化不能穿透到 Agent Loop |
-| 评测层 | `evaluation` | 数据集、回放、指标、版本对比 | 使用与生产相同的契约和 Trace |
+| 评测层 | `evaluation` | 通用评测执行器、通用指标、版本对比（领域用例与指标由对应 Agent 提供） | 使用与生产相同的契约和 Trace；不导入具体 Agent，被测对象经 `EvalSubject` 协议由 `app` 注入 |
 
 ### 5.2 依赖规则
 
@@ -156,24 +158,28 @@ agent-platform/
 │       │   ├── knowledge/             # 知识检索端口
 │       │   └── observability/         # Trace、脱敏
 │       ├── agents/                    # 具体 Agent 容器包
-│       │   └── incident_agent/        # 问题定位 Agent：策略、prompt、profile、报告契约
+│       │   └── incident_agent/        # 问题定位 Agent：策略、prompt、profile、报告契约、评测用例
 │       ├── infra/                     # 外部系统适配器实现
 │       │   ├── qoder/                 # QoderCliLLM
 │       │   ├── mcp/                   # MCP 客户端和工具适配
 │       │   ├── storage/               # SQLite Repository、迁移
 │       │   ├── redis/                 # 后续缓存、锁、队列
 │       │   └── code/                  # 代码仓库读取、堆栈定位
-│       ├── evaluation/                # 评测执行器、指标、回放 fixture
+│       ├── evaluation/                # 通用评测框架：执行器、通用指标、版本对比；回放数据在 fixtures/
 │       └── app/                       # 对外 API
 │           ├── api/                   # FastAPI 路由
 │           ├── services/              # 诊断、反馈、评测、知识服务
 │           ├── workers/               # 异步任务 Worker
 │           └── bootstrap.py           # 依赖组装
-└── tests/                             # 镜像 src 结构
+└── tests/                             # 镜像 src 结构，按层/Agent 分目录
     ├── unit/
-    ├── integration/
-    ├── eval/
-    └── fixtures/
+    │   ├── common/                    # 公共框架单测（已有）
+    │   ├── agents/incident_agent/     # 具体 Agent 单测
+    │   ├── infra/qoder/               # 适配器单测（mock 子进程）
+    │   └── evaluation/                # 评测框架单测（Fake Subject）
+    ├── integration/                   # 假 MCP + SQLite
+    ├── eval/                          # eval_live：真实模型评测
+    └── fixtures/incident_agent/       # 单测小 fixture；评测数据集在 evaluation/fixtures
 ```
 
 当前已实现根包骨架、`common` 的配置/日志/错误码和 Phase 0 Spike 脚本；其余标注的子包将在后续阶段逐步创建。Qoder Adapter 属于外部系统适配，放在 `infra/qoder`，`common/llm` 只保留端口。
@@ -642,7 +648,20 @@ feedback_event
 
 ## 14. 评测机制
 
-### 14.1 数据集
+### 14.1 职责划分与接线
+
+评测框架与被测 Agent 分离（ADR-013），归属如下：
+
+| 归属 | 内容 |
+| --- | --- |
+| `evaluation`（共享框架） | 执行器、通用指标（证据引用有效率、拒答合理性等）、版本对比与报告 |
+| `agents/<name>`（领域内容） | 该 Agent 的评测用例、回放 fixture、领域特有指标（注册进框架） |
+
+接线方式与端口模式一致：`evaluation` 定义 `EvalSubject` 协议，输入诊断任务、返回带 Trace 的运行结果，不导入任何具体 Agent；由 `app` 在组装时注入真实 Agent。评测自身的单元测试使用 Fake Subject，不依赖真实模型。
+
+数据分家（ADR-014）：评测回放数据集放 `evaluation/fixtures/`，数据量大，后续可部分移出版本库；单元测试的小 fixture 放 `tests/fixtures/<agent_name>/`，两者不混用。
+
+### 14.2 数据集
 
 首期准备 20～50 个已解决的历史问题，每个用例包含：
 
@@ -657,7 +676,7 @@ feedback_event
 
 工具优先使用 fixture 或录制回放，保证评测可重复；另外保留少量真实联调测试。
 
-### 14.2 指标
+### 14.3 指标
 
 | 指标 | 说明 |
 | --- | --- |
@@ -671,7 +690,7 @@ feedback_event
 | 延迟 | 端到端耗时 |
 | 安全违规率 | 越权工具、敏感信息、Prompt 注入是否被阻止 |
 
-### 14.3 评测层次
+### 14.4 评测层次
 
 1. **单元测试**：ScriptedLLM + 假工具，测试 Loop、预算、校验、停止条件。
 2. **集成测试**：SQLite、假 MCP、fixture 日志和代码。
@@ -858,3 +877,4 @@ make check     # 提交前全量检查
 | v0.1 | 2026-10-19 | 初版架构基线；补充 Phase 0 Qoder 接入验证结论；确定文档统一放在 `doc/` |
 | v0.2 | 2026-10-19 | 补全 Docstring 规范：类摘要、首行摘要不写实现细节、Raises 说明错误码与触发条件、类型标注要求 |
 | v0.3 | 2026-10-19 | 仓库更名为 `agent-platform`；采用单一根包 `agent_platform` 与 `agents/` 容器包（ADR-010～012）；分层规则改由 import-linter 强制；更新目录结构、契约与错误码路径、Agent 模板和质量命令 |
+| v0.4 | 2026-10-20 | 确定 `evaluation` 独立成模块并经 `EvalSubject` 协议由 `app` 注入（ADR-013）；测试镜像 `src` 并按 Agent 分目录、公共 Fake 收敛根 conftest（ADR-014）；更新目录树与评测章节 |
